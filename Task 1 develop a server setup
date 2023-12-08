@@ -1,0 +1,96 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"sort"
+	"sync"
+	"time"
+)
+
+type RequestPayload struct {
+	ToSort [][]int `json:"to_sort"`
+}
+
+type ResponsePayload struct {
+	SortedArrays [][]int `json:"sorted_arrays"`
+	TimeNs       int64   `json:"time_ns"`
+}
+
+func main() {
+	http.HandleFunc("/process-single", ProcessSingle)
+	http.HandleFunc("/process-concurrent", ProcessConcurrent)
+
+	http.ListenAndServe(":8000", nil)
+}
+
+func ProcessSingle(w http.ResponseWriter, r *http.Request) {
+	process(w, r, false)
+}
+
+func ProcessConcurrent(w http.ResponseWriter, r *http.Request) {
+	process(w, r, true)
+}
+
+func process(w http.ResponseWriter, r *http.Request, concurrent bool) {
+	var req RequestPayload
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	startTime := time.Now().UnixNano()
+
+	var sortedArrays [][]int
+	if concurrent {
+		sortedArrays = processConcurrently(req.ToSort)
+	} else {
+		sortedArrays = processSequentially(req.ToSort)
+	}
+
+	endTime := time.Now().UnixNano()
+
+	response := ResponsePayload{
+		SortedArrays: sortedArrays,
+		TimeNs:       endTime - startTime,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func processSequentially(arrays [][]int) [][]int {
+	var sortedArrays [][]int
+	for _, arr := range arrays {
+		sortedArr := make([]int, len(arr))
+		copy(sortedArr, arr)
+		sort.Ints(sortedArr)
+		sortedArrays = append(sortedArrays, sortedArr)
+	}
+	return sortedArrays
+}
+
+func processConcurrently(arrays [][]int) [][]int {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var sortedArrays [][]int
+
+	for _, arr := range arrays {
+		wg.Add(1)
+		go func(arr []int) {
+			defer wg.Done()
+
+			sortedArr := make([]int, len(arr))
+			copy(sortedArr, arr)
+			sort.Ints(sortedArr)
+
+			mu.Lock()
+			sortedArrays = append(sortedArrays, sortedArr)
+			mu.Unlock()
+		}(arr)
+	}
+
+	wg.Wait()
+	return sortedArrays
+}
